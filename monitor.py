@@ -93,7 +93,7 @@ SEARCHES = {
 # soit visible dans les logs si ces valeurs ne matchent rien côté serveur.
 CENTRIS_PROPERTY_TYPES = {
     "chalets": ["Chalet", "ResidentialLot"],
-    "condos": ["Condominium"],  # non confirmé
+    "condos": ["SellCondo"],  # confirmé par capture réseau (Centris, 2026-09-20)
 }
 UBEE_INSCRIPTION_TYPES = {
     "chalets": ["Terrain", "Unifamiliale"],
