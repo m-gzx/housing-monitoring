@@ -1,17 +1,27 @@
-# Moniteur de chalets bord de l'eau
+# Moniteur immobilier (chalets & condos)
 
-Surveille automatiquement les inscriptions de chalets à vendre, bord de
-l'eau, à 2h de route ou moins de G3A2P8, et génère un rapport HTML (carte
-interactive avec points cliquables + fiches) avec un historique roulant
-des 5 derniers jours, navigable avec des flèches précédent/suivant. Pas de
-notion d'annonce "déjà vue" : une annonce reste visible tant qu'elle est
-encore trouvée par la recherche, peu importe si elle a déjà figuré dans un
-rapport précédent.
+Surveille automatiquement deux recherches en parallèle — chalets à vendre
+bord de l'eau (à 2h de route ou moins de G3A2P8) et condos 3-5 chambres
+près du centre-ville de Québec — et génère un rapport HTML (carte
+interactive avec points cliquables + fiches, un bouton pour basculer entre
+les deux recherches) avec un historique roulant des 5 derniers jours,
+navigable avec des flèches précédent/suivant. Pas de notion d'annonce
+"déjà vue" : une annonce reste visible tant qu'elle est encore trouvée par
+la recherche, peu importe si elle a déjà figuré dans un rapport précédent.
+
+Les deux recherches sont définies dans `SEARCHES` (en haut de
+`monitor.py`) — ajuster leurs critères (origine, rayon, temps de route,
+chambres) directement là. Les valeurs de filtre "condos" pour Centris
+(`CENTRIS_PROPERTY_TYPES["condos"]`) et uBee
+(`UBEE_INSCRIPTION_TYPES["condos"]`) sont des estimations **non
+confirmées** par capture réseau (contrairement à celles de "chalets") —
+voir la section 2 ci-dessous si une recherche condos revient
+systématiquement à 0 résultat dans les logs.
 
 ## 1. Installation (à faire une fois, dans Claude Code)
 
 ```bash
-cd chalet-monitor
+cd housing-monitoring
 pip install -r requirements.txt
 playwright install chromium
 ```
@@ -21,9 +31,11 @@ La deuxième commande télécharge un navigateur Chromium headless
 valide face à sa protection Cloudflare (voir section 2).
 
 Aucun secret/compte courriel requis. Pour ajuster le point de départ, le
-rayon de recherche ou le temps de route max, modifier directement les
-constantes en haut de `monitor.py` (`ORIGIN_POSTAL_CODE`, `MAX_DRIVE_HOURS`,
-`SEARCH_RADIUS_KM`).
+rayon de recherche, le temps de route max ou les chambres, modifier
+directement `SEARCHES` en haut de `monitor.py` (ou les constantes
+individuelles `ORIGIN_POSTAL_CODE`, `MAX_DRIVE_HOURS`, `SEARCH_RADIUS_KM`,
+`CONDO_ORIGIN_COORDS`, `CONDO_SEARCH_RADIUS_KM`, `CONDO_MAX_DRIVE_HOURS`,
+`CONDO_MIN_BEDROOMS`, `CONDO_MAX_BEDROOMS` qu'il référence).
 
 ## 2. Centris : requête validée — comment faire pareil pour un autre site
 
@@ -60,7 +72,7 @@ de développement du navigateur (F12) :
    l'URL exacte, les en-têtes et le corps de la requête.
 10. Coller ce cURL (en retirant les cookies/tokens de session personnels
     si présents) dans une conversation Claude Code pour ajuster
-    `search_centris_waterfront_cottages()` avec les bons noms de champs.
+    `search_centris_listings()` avec les bons noms de champs.
 
 ### Spécifique à Centris — ✅ validé le 2026-09-10
 
@@ -81,7 +93,7 @@ de développement du navigateur (F12) :
   section 1, `playwright install chromium`).
 - Si Centris change son HTML ou son endpoint dans le futur, refaire la
   capture avec la marche à suivre générale ci-dessus (viser la vue
-  **Galerie**, pas **Carte**) et ajuster `search_centris_waterfront_cottages()`
+  **Galerie**, pas **Carte**) et ajuster `search_centris_listings()`
   / `parse_centris_listing_cards()` en conséquence.
 
 ### Spécifique à DuProprio
@@ -99,7 +111,7 @@ de développement du navigateur (F12) :
 - L'endpoint utilisé est `POST https://api.ubee.ca/api/anonymous/Search/SearchProperties`,
   paginé par `?pageIndex=N` (0-indexé) en paramètre d'URL.
 - Contrairement à Centris, uBee n'a **aucune protection Cloudflare/cookie** —
-  `search_ubee_waterfront_cottages()` utilise donc un simple `requests.post()`,
+  `search_ubee_listings()` utilise donc un simple `requests.post()`,
   pas besoin de Playwright.
 - Le filtre bord de l'eau : `complimentaryFilters.hasWaterAccess: true`. uBee
   n'a pas de catégorie "Chalet" séparée dans son interface — les chalets y
@@ -111,7 +123,7 @@ de développement du navigateur (F12) :
   sur un exemple réel).
 - Si uBee change son endpoint ou son format dans le futur, refaire la
   capture avec la marche à suivre générale ci-dessus et ajuster
-  `search_ubee_waterfront_cottages()` / `parse_ubee_listings()` en
+  `search_ubee_listings()` / `parse_ubee_listings()` en
   conséquence.
 
 **Alternative plus simple si les API s'avèrent trop instables** :
@@ -145,7 +157,7 @@ le rapport paginé le plus à jour.
 2. Dans le dépôt GitHub : **Settings → Pages → Build and deployment →
    Source**, choisir **GitHub Actions**.
 3. Le workflow tourne automatiquement chaque jour, ou manuellement via
-   l'onglet **Actions → Chalet monitor → Run workflow**.
+   l'onglet **Actions → Housing monitor → Run workflow**.
 4. L'URL du site (visible dans Settings → Pages une fois le premier
    déploiement fait, ou dans le résumé du run sous "Déploie sur GitHub
    Pages") affiche le rapport, avec des flèches précédent/suivant pour
@@ -163,7 +175,7 @@ crontab -e
 Ajouter une ligne pour vérifier tous les jours à 8h :
 
 ```
-0 8 * * * cd /chemin/vers/chalet-monitor && /usr/bin/python3 monitor.py >> monitor.log 2>&1
+0 8 * * * cd /chemin/vers/housing-monitoring && /usr/bin/python3 monitor.py >> monitor.log 2>&1
 ```
 
 Sur Windows : utiliser le Planificateur de tâches avec une action qui
@@ -176,17 +188,28 @@ peut être ouvert manuellement au retour.
 
 ## 5. Ce que fait le script à chaque exécution
 
-1. Géocode G3A2P8.
-2. Cherche les chalets bord de l'eau dans un rayon large autour de ce point.
-3. Filtre par **temps de route réel** (≤ 2h) via OSRM, pas juste à vol d'oiseau.
-4. Ajoute le jour courant à `history.json` (remplace l'entrée du jour si le
-   script est relancé le même jour) et ne garde que les `HISTORY_DAYS`
-   jours les plus récents.
+Pour chacune des deux recherches définies dans `SEARCHES` (chalets, condos) :
+
+1. Détermine le point de départ (géocode G3A2P8 pour les chalets ;
+   coordonnée fixe du centre-ville de Québec pour les condos).
+2. Cherche les annonces correspondant aux critères de cette recherche
+   (type de propriété, chambres, bord de l'eau...) dans un rayon large
+   autour de ce point.
+3. Filtre par **temps de route réel** via OSRM, pas juste à vol d'oiseau
+   (≤ 2h pour les chalets, ≤ 15 min pour les condos).
+
+Puis, une fois les deux recherches terminées :
+
+4. Ajoute le jour courant à `history.json` (un groupe d'annonces par
+   recherche ; remplace l'entrée du jour si le script est relancé le même
+   jour) et ne garde que les `HISTORY_DAYS` jours les plus récents.
 5. Construit un rapport HTML autonome (`report.html`, une carte
-   interactive Leaflet/OpenStreetMap partagée entre les jours — cliquer
-   sur un point ouvre un popup avec adresse/prix/temps de route et un
-   lien vers l'annonce — plus des fiches cliquables par jour, paginé avec
-   des flèches précédent/suivant) et l'ouvre dans le navigateur par défaut.
+   interactive Leaflet/OpenStreetMap partagée entre les jours ET les
+   recherches — cliquer sur un point ouvre un popup avec
+   adresse/prix/temps de route et un lien vers l'annonce — plus des
+   fiches cliquables par jour, paginé avec des flèches précédent/suivant,
+   et un bouton pour basculer entre chalets et condos) et l'ouvre dans le
+   navigateur par défaut.
 
 ## Notes
 
@@ -198,7 +221,7 @@ peut être ouvert manuellement au retour.
   (1x/jour est raisonnable).
 - Pour ajouter DuProprio en plus de Centris et uBee, il faudrait une
   fonction de recherche additionnelle, similaire à
-  `search_centris_waterfront_cottages()` (voir section 2 ci-dessus).
+  `search_centris_listings()` (voir section 2 ci-dessus).
 - `report.html` est régénéré à chaque exécution — il n'est pas versionné
   dans Git (voir `.gitignore`). `history.json`, lui, l'est : c'est ce qui
   permet à `HISTORY_DAYS` jours de survivre d'une exécution à l'autre sur
