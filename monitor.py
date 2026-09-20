@@ -61,6 +61,10 @@ CONDO_ORIGIN_COORDS = (46.8092, -71.2145)
 CONDO_SEARCH_RADIUS_KM = 8
 CONDO_MAX_DRIVE_HOURS = 0.25  # 15 minutes — zone urbaine, pas besoin d'un grand rayon
 CONDO_MIN_BEDROOMS = 3
+# CONDO_MAX_BEDROOMS n'est actuellement PAS envoyé à uBee (voir
+# search_ubee_listings) : un champ maxBedrooms devinée a provoqué un 400
+# de leur API en production le 2026-09-20. Utilisée pour l'instant
+# seulement dans le texte de critères affiché dans le rapport.
 CONDO_MAX_BEDROOMS = 5
 
 # Les deux recherches du rapport. "chalets" garde le comportement d'origine
@@ -401,17 +405,23 @@ def search_ubee_listings(origin: tuple[float, float], radius_km: float, category
     chalets y sont classés sous "Unifamiliale" (résidence uni-familiale) ou
     "Terrain", d'où UBEE_INSCRIPTION_TYPES["chalets"] = ["Terrain",
     "Unifamiliale"]. La valeur pour "condos" ("Copropriete") n'est PAS
-    confirmée par capture réseau — si le run trouve 0 annonce pour cette
-    recherche, c'est le premier endroit à vérifier.
+    confirmée par capture réseau.
 
-    Pour "condos", `minBedrooms`/`maxBedrooms` sont fixés à
-    CONDO_MIN_BEDROOMS/CONDO_MAX_BEDROOMS — `minBedrooms` est un champ
-    confirmé (déjà présent, à 0, dans la requête chalets d'origine), mais
-    `maxBedrooms` est une supposition non confirmée (uBee ignore
-    probablement un champ JSON qu'il ne reconnaît pas plutôt que de
-    rejeter toute la requête, donc le risque d'échec total est faible même
-    si le nom est faux — contrairement au fieldId Centris, voir
-    search_centris_listings()).
+    Contrairement à ce que je pensais en l'écrivant, uBee **rejette** les
+    requêtes avec une valeur non reconnue (`400 Bad Request`) au lieu de
+    simplement retourner 0 résultat — confirmé en production le
+    2026-09-20 (`RuntimeError: uBee a refusé la requête SearchProperties
+    (400)`), très probablement à cause d'`inscriptionTypes: ["Copropriete"]`.
+    Ce n'est donc PAS plus sûr à deviner qu'un fieldId Centris (voir
+    search_centris_listings()) — run_search() encaisse maintenant cet
+    échec proprement (voir sa docstring) plutôt que de planter tout le
+    script, mais la vraie valeur reste à confirmer par capture réseau.
+
+    Pour "condos", seul `minBedrooms` est fixé à CONDO_MIN_BEDROOMS — c'est
+    un champ confirmé (déjà présent, à 0, dans la requête chalets
+    d'origine). Un `maxBedrooms` avait été ajouté par supposition mais
+    retiré après l'incident ci-dessus : mieux vaut confirmer d'abord que
+    `inscriptionTypes` fonctionne avant de deviner un deuxième champ.
 
     Pagination par ?pageIndex=N (0-indexé) en paramètre d'URL ; le corps de
     la requête reste identique à chaque page (mapBoundaries fixe = bounding
@@ -464,7 +474,6 @@ def search_ubee_listings(origin: tuple[float, float], radius_km: float, category
     }
     if category == "condos":
         payload["minBedrooms"] = CONDO_MIN_BEDROOMS
-        payload["maxBedrooms"] = CONDO_MAX_BEDROOMS  # non confirmé, voir docstring
 
     max_pages = 100  # garde-fou
     listings: list[dict] = []
@@ -772,6 +781,15 @@ def run_search(name: str, config: dict) -> tuple[tuple[float, float], list[dict]
     """
     Exécute une recherche complète (Centris + uBee + filtre temps de route)
     pour une entrée de SEARCHES, et retourne (origine résolue, candidats).
+
+    Centris et uBee sont appelés dans des try/except séparés : une requête
+    refusée par l'un des deux (ex. valeur de filtre non reconnue) ne doit
+    interrompre ni l'autre site, ni les autres recherches de SEARCHES. Un
+    run du 2026-09-20 a montré que c'était nécessaire — uBee a répondu
+    400 Bad Request pour la recherche "condos" (valeur de filtre
+    inscriptionTypes/Copropriete non confirmée, voir UBEE_INSCRIPTION_TYPES),
+    ce qui a fait planter tout le script avant même la génération du
+    rapport, alors que "chalets" avait déjà réussi.
     """
     if config["origin_postal_code"]:
         origin = geocode_postal_code(config["origin_postal_code"])
@@ -782,8 +800,15 @@ def run_search(name: str, config: dict) -> tuple[tuple[float, float], list[dict]
     radius_km = config["search_radius_km"]
     max_drive_hours = config["max_drive_hours"]
 
-    raw_listings = search_centris_listings(origin, radius_km, category=name)
-    raw_listings += search_ubee_listings(origin, radius_km, category=name)
+    raw_listings: list[dict] = []
+    try:
+        raw_listings += search_centris_listings(origin, radius_km, category=name)
+    except (RuntimeError, requests.RequestException) as exc:
+        print(f"[{name}] échec de la recherche Centris, ignorée pour ce run : {exc}")
+    try:
+        raw_listings += search_ubee_listings(origin, radius_km, category=name)
+    except (RuntimeError, requests.RequestException) as exc:
+        print(f"[{name}] échec de la recherche uBee, ignorée pour ce run : {exc}")
     print(f"[{name}] {len(raw_listings)} annonce(s) brute(s) trouvée(s) (Centris + uBee).")
     for l in raw_listings[:5]:
         d = haversine_km(origin, (l["lat"], l["lon"]))
