@@ -1,13 +1,14 @@
 # Moniteur immobilier (chalets & condos)
 
-Surveille automatiquement deux recherches en parallèle — chalets à vendre
-bord de l'eau (à 2h de route ou moins de G3A2P8) et condos 3-5 chambres
-près du centre-ville de Québec — et génère un rapport HTML (carte
-interactive avec points cliquables + fiches, un bouton pour basculer entre
-les deux recherches) avec un historique roulant des 5 derniers jours,
-navigable avec des flèches précédent/suivant. Pas de notion d'annonce
-"déjà vue" : une annonce reste visible tant qu'elle est encore trouvée par
-la recherche, peu importe si elle a déjà figuré dans un rapport précédent.
+Surveille automatiquement deux recherches en parallèle, à partir du même
+point de départ (2450 Boul Laurier, Québec, QC G1V 2L1) — chalets/terrains
+à vendre bord de l'eau (150 min de route ou moins) et condos 3-5 chambres
+(15 min ou moins) — et génère un rapport HTML (carte interactive avec
+points cliquables + fiches, un bouton pour basculer entre les deux
+recherches) avec un historique roulant des 5 derniers jours, navigable
+avec des flèches précédent/suivant. Pas de notion d'annonce "déjà vue" :
+une annonce reste visible tant qu'elle est encore trouvée par la
+recherche, peu importe si elle a déjà figuré dans un rapport précédent.
 
 Les deux recherches sont définies dans `SEARCHES` (en haut de
 `monitor.py`) — ajuster leurs critères (origine, rayon, temps de route,
@@ -30,12 +31,14 @@ La deuxième commande télécharge un navigateur Chromium headless
 (~150-300 Mo, une seule fois) — utilisé pour obtenir une session Centris
 valide face à sa protection Cloudflare (voir section 2).
 
-Aucun secret/compte courriel requis. Pour ajuster le point de départ, le
-rayon de recherche, le temps de route max ou les chambres, modifier
-directement `SEARCHES` en haut de `monitor.py` (ou les constantes
-individuelles `ORIGIN_POSTAL_CODE`, `MAX_DRIVE_HOURS`, `SEARCH_RADIUS_KM`,
-`CONDO_ORIGIN_COORDS`, `CONDO_SEARCH_RADIUS_KM`, `CONDO_MAX_DRIVE_HOURS`,
-`CONDO_MIN_BEDROOMS`, `CONDO_MAX_BEDROOMS` qu'il référence).
+Aucun secret/compte courriel requis. Pour ajuster le point de départ
+(commun aux deux recherches), le rayon de recherche, le temps de route max
+ou les chambres, modifier directement `SEARCHES` en haut de `monitor.py`
+(ou les constantes individuelles `ORIGIN_ADDRESS`, `MAX_DRIVE_HOURS`,
+`SEARCH_RADIUS_KM`, `CONDO_SEARCH_RADIUS_KM`, `CONDO_MAX_DRIVE_HOURS`,
+`CONDO_MIN_BEDROOMS`, `CONDO_MAX_BEDROOMS` qu'il référence). `SEARCH_RADIUS_KM`
+doit rester assez large pour couvrir `MAX_DRIVE_HOURS` à vol d'oiseau (voir
+le commentaire à côté de sa définition) si tu changes ce dernier.
 
 ## 2. Centris : requête validée — comment faire pareil pour un autre site
 
@@ -188,15 +191,16 @@ peut être ouvert manuellement au retour.
 
 ## 5. Ce que fait le script à chaque exécution
 
+1. Géocode `ORIGIN_ADDRESS` (2450 Boul Laurier, Québec, QC G1V 2L1) une
+   seule fois — c'est le point de départ des deux recherches.
+
 Pour chacune des deux recherches définies dans `SEARCHES` (chalets, condos) :
 
-1. Détermine le point de départ (géocode G3A2P8 pour les chalets ;
-   coordonnée fixe du centre-ville de Québec pour les condos).
 2. Cherche les annonces correspondant aux critères de cette recherche
    (type de propriété, chambres, bord de l'eau...) dans un rayon large
    autour de ce point.
 3. Filtre par **temps de route réel** via OSRM, pas juste à vol d'oiseau
-   (≤ 2h pour les chalets, ≤ 15 min pour les condos).
+   (≤ 150 min pour les chalets/terrains, ≤ 15 min pour les condos).
 
 Puis, une fois les deux recherches terminées :
 
