@@ -21,7 +21,7 @@ systématiquement à 0 résultat dans les logs.
 ## 1. Installation (à faire une fois, dans Claude Code)
 
 ```bash
-cd chalet-monitor
+cd housing-monitoring
 pip install -r requirements.txt
 playwright install chromium
 ```
@@ -157,7 +157,7 @@ le rapport paginé le plus à jour.
 2. Dans le dépôt GitHub : **Settings → Pages → Build and deployment →
    Source**, choisir **GitHub Actions**.
 3. Le workflow tourne automatiquement chaque jour, ou manuellement via
-   l'onglet **Actions → Chalet monitor → Run workflow**.
+   l'onglet **Actions → Housing monitor → Run workflow**.
 4. L'URL du site (visible dans Settings → Pages une fois le premier
    déploiement fait, ou dans le résumé du run sous "Déploie sur GitHub
    Pages") affiche le rapport, avec des flèches précédent/suivant pour
@@ -175,7 +175,7 @@ crontab -e
 Ajouter une ligne pour vérifier tous les jours à 8h :
 
 ```
-0 8 * * * cd /chemin/vers/chalet-monitor && /usr/bin/python3 monitor.py >> monitor.log 2>&1
+0 8 * * * cd /chemin/vers/housing-monitoring && /usr/bin/python3 monitor.py >> monitor.log 2>&1
 ```
 
 Sur Windows : utiliser le Planificateur de tâches avec une action qui

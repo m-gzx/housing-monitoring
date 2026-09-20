@@ -145,7 +145,7 @@ def geocode_postal_code(postal_code: str) -> tuple[float, float]:
     à chaque exécution.
     """
     url = "https://nominatim.openstreetmap.org/search"
-    headers = {"User-Agent": "chalet-monitor-personnel/1.0"}
+    headers = {"User-Agent": "housing-monitoring-personnel/1.0"}
 
     for code in (f"{postal_code[:3]} {postal_code[3:]}", postal_code[:3]):
         resp = requests.get(
@@ -670,7 +670,7 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
     </div>
     <div id="map"></div>
     {blocks_html}
-    <footer>chalet-monitor · historique roulant des {HISTORY_DAYS} derniers jours</footer>
+    <footer>housing-monitoring · historique roulant des {HISTORY_DAYS} derniers jours</footer>
   </div>
   <script>
     const SEARCHES = {searches_json};  // {{chalets: {{label, criteria, origin:[lat,lon], zoom}}, condos: {{...}}}}
