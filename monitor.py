@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-Moniteur immobilier à deux recherches : chalets à vendre bord de l'eau (à
-2h de route ou moins de G3A2P8) et condos 3-5 chambres près du centre-ville
-de Québec.
+Moniteur immobilier à deux recherches, partant du même point de départ
+(ORIGIN_ADDRESS) : chalets/terrains à vendre bord de l'eau (150 min de
+route ou moins) et condos 3-5 chambres près du centre-ville (15 min ou
+moins).
 
-Flux, pour chacune des deux recherches (voir SEARCHES) :
-  1. Détermine le point de départ (géocodé via Nominatim pour les chalets,
-     coordonnées fixes pour les condos — voir SEARCHES).
-  2. Interroge Centris et uBee pour les annonces correspondant aux critères
-     de cette recherche (type de propriété, chambres, bord de l'eau...).
-  3. Filtre les résultats par temps de route réel (via OSRM), pas juste
-     à vol d'oiseau.
-  4. Ajoute le jour courant à l'historique roulant (history.json, les
+Flux :
+  1. Géocode ORIGIN_ADDRESS une seule fois via Nominatim (partagé par les
+     deux recherches).
+  2. Pour chacune des deux recherches (voir SEARCHES) : interroge Centris
+     et uBee pour les annonces correspondant à ses critères (type de
+     propriété, chambres, bord de l'eau...), puis filtre par temps de
+     route réel (via OSRM), pas juste à vol d'oiseau.
+  3. Ajoute le jour courant à l'historique roulant (history.json, les
      HISTORY_DAYS derniers jours — pas de notion d'annonce "déjà vue", une
      annonce reste visible tant qu'elle est encore trouvée par la
      recherche), un groupe d'annonces par recherche.
-  5. Génère un rapport HTML autonome (carte interactive avec points
+  4. Génère un rapport HTML autonome (carte interactive avec points
      cliquables + fiches, paginé par jour, avec un bouton pour basculer
      entre les deux recherches) et l'ouvre dans le navigateur par défaut.
 
@@ -23,7 +24,7 @@ Nécessite : pip install -r requirements.txt puis, une seule fois,
 "playwright install chromium" (utilisé pour obtenir une session Centris
 valide face à Cloudflare — voir search_centris_listings()).
 Aucune configuration/secret requis — ajuster les constantes ci-dessous
-au besoin (codes postaux, rayons, temps de route max, chambres).
+au besoin (adresse de départ, rayons, temps de route max, chambres).
 """
 
 import json
@@ -38,50 +39,47 @@ import requests
 from bs4 import BeautifulSoup
 
 # --- CONFIGURATION ---
-ORIGIN_POSTAL_CODE = "G3A2P8"
-MAX_DRIVE_HOURS = 2.0
-SEARCH_RADIUS_KM = 180  # rayon large à vol d'oiseau, filtré ensuite par temps de route réel
+# Point de départ partagé par les deux recherches (chalets et condos).
+ORIGIN_ADDRESS = "2450 Boul Laurier, Québec, QC G1V 2L1"
+
+# Coordonnées de secours pour ORIGIN_ADDRESS, utilisées seulement si
+# Nominatim échoue à la géocoder (voir geocode_address). Place
+# Sainte-Foy, 2450 Boulevard Laurier — coordonnées confirmées par le
+# propriétaire (Apple Maps), pas une estimation.
+ORIGIN_FALLBACK_COORDS = (46.773389, -71.27876)
+
 HISTORY_DAYS = 5  # nombre de jours conservés dans l'historique roulant du rapport
 
-# Coordonnées de secours pour ORIGIN_POSTAL_CODE, utilisées seulement si
-# Nominatim échoue à le géocoder (voir geocode_postal_code : quatre
-# stratégies différentes testées en production le 2026-09-10 n'ont retourné
-# aucune donnée de code postal pour le Canada sur l'instance publique).
-# Saint-Augustin-de-Desmaures, QC (confirmé par le propriétaire) — à mettre
-# à jour si ORIGIN_POSTAL_CODE change.
-FALLBACK_ORIGIN_COORDS = (46.75588, -71.37319)
+MAX_DRIVE_HOURS = 2.5  # 150 minutes — chalets et terrains
+# Rayon à vol d'oiseau pré-filtré avant OSRM (voir run_search) : doit rester
+# assez large pour ne jamais exclure une annonce à MAX_DRIVE_HOURS ou moins
+# (la route est toujours plus longue que la ligne droite). 250 km couvre
+# large pour 150 min même en roulant à 100 km/h en ligne droite tout du long.
+SEARCH_RADIUS_KM = 250
 
-# Recherche condos centre-ville de Québec : origine codée en dur (Grande
-# Allée / colline Parlementaire, à ajuster si ce n'est pas le bon centre)
-# plutôt que géocodée — un nom de lieu se géocoderait probablement bien via
-# Nominatim (contrairement aux codes postaux, voir geocode_postal_code),
-# mais une coordonnée fixe évite tout appel réseau superflu pour un point
-# qui ne change jamais.
-CONDO_ORIGIN_COORDS = (46.8092, -71.2145)
-CONDO_SEARCH_RADIUS_KM = 8
-CONDO_MAX_DRIVE_HOURS = 0.25  # 15 minutes — zone urbaine, pas besoin d'un grand rayon
+CONDO_MAX_DRIVE_HOURS = 0.25  # 15 minutes — condos
+CONDO_SEARCH_RADIUS_KM = 8  # zone urbaine, pas besoin d'un grand rayon
 CONDO_MIN_BEDROOMS = 3
+# CONDO_MAX_BEDROOMS n'est actuellement PAS envoyé à uBee (voir
+# search_ubee_listings) : un champ maxBedrooms devinée a provoqué un 400
+# de leur API en production le 2026-09-20. Utilisée pour l'instant
+# seulement dans le texte de critères affiché dans le rapport.
 CONDO_MAX_BEDROOMS = 5
 
-# Les deux recherches du rapport. "chalets" garde le comportement d'origine
-# (géocodage de ORIGIN_POSTAL_CODE) ; "condos" utilise une coordonnée fixe
-# (origin_postal_code=None). Voir search_centris_listings() /
+# Les deux recherches du rapport, toutes deux à partir d'ORIGIN_ADDRESS
+# (géocodée une seule fois dans main()). Voir search_centris_listings() /
 # search_ubee_listings() pour comment category sélectionne les filtres.
 SEARCHES = {
     "chalets": {
         "label": "🏡 Chalets bord de l'eau",
-        "criteria": f"{MAX_DRIVE_HOURS:.0f}h de route max de {ORIGIN_POSTAL_CODE}",
-        "origin_postal_code": ORIGIN_POSTAL_CODE,
-        "origin_coords": None,
+        "criteria": f"{MAX_DRIVE_HOURS * 60:.0f} min de route max de {ORIGIN_ADDRESS}",
         "search_radius_km": SEARCH_RADIUS_KM,
         "max_drive_hours": MAX_DRIVE_HOURS,
         "map_zoom": 9,
     },
     "condos": {
         "label": "🏢 Condos centre-ville",
-        "criteria": f"{CONDO_SEARCH_RADIUS_KM} km du centre-ville de Québec, {CONDO_MIN_BEDROOMS}-{CONDO_MAX_BEDROOMS} chambres",
-        "origin_postal_code": None,
-        "origin_coords": CONDO_ORIGIN_COORDS,
+        "criteria": f"{CONDO_MAX_DRIVE_HOURS * 60:.0f} min de route max de {ORIGIN_ADDRESS}, {CONDO_MIN_BEDROOMS}-{CONDO_MAX_BEDROOMS} chambres",
         "search_radius_km": CONDO_SEARCH_RADIUS_KM,
         "max_drive_hours": CONDO_MAX_DRIVE_HOURS,
         "map_zoom": 13,
@@ -107,65 +105,51 @@ HISTORY_FILE = BASE_DIR / "history.json"
 REPORT_FILE = BASE_DIR / "report.html"
 
 
-def geocode_postal_code(postal_code: str) -> tuple[float, float]:
+def geocode_address(address: str) -> tuple[float, float]:
     """
-    Convertit un code postal canadien en (lat, lon) via Nominatim.
+    Géocode une adresse complète (numéro + rue + ville, pas un code postal
+    isolé) via Nominatim, en recherche libre restreinte au Canada par le
+    paramètre structuré `countrycodes=ca` plutôt qu'en ajoutant "Canada" en
+    texte libre dans la requête.
 
-    Nominatim n'indexe presque jamais les codes postaux canadiens complets
-    à 6 caractères comme entités propres (Canada Post ne publie pas de
-    limites précises par LDU), mais indexe généralement les secteurs de tri
-    (FSA, les 3 premiers caractères) comme polygones dans OSM.
+    Ce dernier point compte : une tentative précédente de géocodage (pour
+    un code postal seul, voir l'historique de cette fonction dans git log)
+    a démontré en production le 2026-09-10 qu'ajouter ", Canada" en texte
+    peut faire correspondre un lieu-dit non pertinent nommé littéralement
+    "Canada" (à Pike County, Kentucky, États-Unis !) plutôt que le pays —
+    countrycodes=ca évite complètement cette ambiguïté.
 
-    Historique des essais (tous en production, le 2026-09-10) :
-    1. Recherche structurée `postalcode=` avec le code complet seul :
-       échoue (`ValueError: Impossible de géocoder G3A2P8`) — attendu, OSM
-       n'a pas de polygone au niveau LDU.
-    2. Recherche libre `q="{code}, Canada"` : ne lève plus d'erreur, mais
-       résout vers un mauvais endroit — il existe un lieu-dit nommé
-       littéralement "Canada" à Pike County, Kentucky (États-Unis), et
-       Nominatim fait correspondre CE lieu plutôt que d'interpréter
-       "Canada" comme le pays (`"G3A 2P8, Canada" -> "Canada, Pike County,
-       Kentucky, 41519, United States"`), donnant une origine à ~1900 km au
-       sud sans la moindre erreur.
-    3. Recherche libre `q="{code}"` + `countrycodes=ca` (sans le mot
-       "Canada" en texte) : retourne 0 résultat pour le code complet ET
-       pour le FSA seul — sans "Canada" comme ancre textuelle, le
-       tokenizer de Nominatim ne trouve aucune correspondance du tout pour
-       un code postal nu, même restreint géographiquement.
-    4. Recherche **structurée** dédiée aux codes postaux (`postalcode=` +
-       `country=`) : retourne aussi 0 résultat, pour le code complet ET le
-       FSA seul. L'instance publique de Nominatim semble simplement n'avoir
-       aucune donnée de code postal indexée pour le Canada, quelle que soit
-       la méthode de recherche.
-
-    Après ces quatre échecs, on renonce à géocoder le code postal lui-même
-    et on retombe sur FALLBACK_ORIGIN_COORDS (coordonnées approximatives
-    codées en dur) plutôt que de faire planter tout le pipeline — un script
-    personnel à origine fixe n'a pas besoin de dépendre d'un géocodage fiable
-    à chaque exécution.
+    Une adresse complète (numéro civique + rue + ville) est un cas d'usage
+    standard pour Nominatim, contrairement à un code postal canadien isolé
+    (dont la recherche a échoué de quatre façons différentes en production
+    avant qu'on abandonne cette approche — voir git log) : donc pas de
+    repli structuré/FSA ici, juste une recherche libre directe. En cas
+    d'échec quand même, retombe sur ORIGIN_FALLBACK_COORDS plutôt que de
+    faire planter tout le pipeline.
     """
     url = "https://nominatim.openstreetmap.org/search"
     headers = {"User-Agent": "housing-monitoring-personnel/1.0"}
 
-    for code in (f"{postal_code[:3]} {postal_code[3:]}", postal_code[:3]):
+    try:
         resp = requests.get(
             url,
-            params={"postalcode": code, "country": "Canada", "format": "json"},
+            params={"q": address, "format": "json", "countrycodes": "ca"},
             headers=headers,
             timeout=10,
         )
         resp.raise_for_status()
         data = resp.json()
         if data:
-            print(f"[Géocodage] postalcode=\"{code}\" -> {data[0].get('display_name')}")
+            print(f"[Géocodage] \"{address}\" -> {data[0].get('display_name')}")
             return float(data[0]["lat"]), float(data[0]["lon"])
-        time.sleep(1)  # respecter la politique d'usage de Nominatim entre deux essais
+    except requests.RequestException as exc:
+        print(f"[Géocodage] échec de la requête pour \"{address}\" : {exc}")
 
     print(
-        f"[Géocodage] échec de toutes les stratégies pour {postal_code} — "
-        f"utilisation des coordonnées de secours {FALLBACK_ORIGIN_COORDS}."
+        f"[Géocodage] échec pour \"{address}\" — "
+        f"utilisation des coordonnées de secours {ORIGIN_FALLBACK_COORDS}."
     )
-    return FALLBACK_ORIGIN_COORDS
+    return ORIGIN_FALLBACK_COORDS
 
 
 def haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -401,17 +385,23 @@ def search_ubee_listings(origin: tuple[float, float], radius_km: float, category
     chalets y sont classés sous "Unifamiliale" (résidence uni-familiale) ou
     "Terrain", d'où UBEE_INSCRIPTION_TYPES["chalets"] = ["Terrain",
     "Unifamiliale"]. La valeur pour "condos" ("Copropriete") n'est PAS
-    confirmée par capture réseau — si le run trouve 0 annonce pour cette
-    recherche, c'est le premier endroit à vérifier.
+    confirmée par capture réseau.
 
-    Pour "condos", `minBedrooms`/`maxBedrooms` sont fixés à
-    CONDO_MIN_BEDROOMS/CONDO_MAX_BEDROOMS — `minBedrooms` est un champ
-    confirmé (déjà présent, à 0, dans la requête chalets d'origine), mais
-    `maxBedrooms` est une supposition non confirmée (uBee ignore
-    probablement un champ JSON qu'il ne reconnaît pas plutôt que de
-    rejeter toute la requête, donc le risque d'échec total est faible même
-    si le nom est faux — contrairement au fieldId Centris, voir
-    search_centris_listings()).
+    Contrairement à ce que je pensais en l'écrivant, uBee **rejette** les
+    requêtes avec une valeur non reconnue (`400 Bad Request`) au lieu de
+    simplement retourner 0 résultat — confirmé en production le
+    2026-09-20 (`RuntimeError: uBee a refusé la requête SearchProperties
+    (400)`), très probablement à cause d'`inscriptionTypes: ["Copropriete"]`.
+    Ce n'est donc PAS plus sûr à deviner qu'un fieldId Centris (voir
+    search_centris_listings()) — run_search() encaisse maintenant cet
+    échec proprement (voir sa docstring) plutôt que de planter tout le
+    script, mais la vraie valeur reste à confirmer par capture réseau.
+
+    Pour "condos", seul `minBedrooms` est fixé à CONDO_MIN_BEDROOMS — c'est
+    un champ confirmé (déjà présent, à 0, dans la requête chalets
+    d'origine). Un `maxBedrooms` avait été ajouté par supposition mais
+    retiré après l'incident ci-dessus : mieux vaut confirmer d'abord que
+    `inscriptionTypes` fonctionne avant de deviner un deuxième champ.
 
     Pagination par ?pageIndex=N (0-indexé) en paramètre d'URL ; le corps de
     la requête reste identique à chaque page (mapBoundaries fixe = bounding
@@ -464,7 +454,6 @@ def search_ubee_listings(origin: tuple[float, float], radius_km: float, category
     }
     if category == "condos":
         payload["minBedrooms"] = CONDO_MIN_BEDROOMS
-        payload["maxBedrooms"] = CONDO_MAX_BEDROOMS  # non confirmé, voir docstring
 
     max_pages = 100  # garde-fou
     listings: list[dict] = []
@@ -768,22 +757,34 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
     return REPORT_FILE
 
 
-def run_search(name: str, config: dict) -> tuple[tuple[float, float], list[dict]]:
+def run_search(name: str, origin: tuple[float, float], config: dict) -> list[dict]:
     """
     Exécute une recherche complète (Centris + uBee + filtre temps de route)
-    pour une entrée de SEARCHES, et retourne (origine résolue, candidats).
-    """
-    if config["origin_postal_code"]:
-        origin = geocode_postal_code(config["origin_postal_code"])
-    else:
-        origin = config["origin_coords"]
-    print(f"[{name}] Origine : {origin}.")
+    pour une entrée de SEARCHES à partir d'une origine déjà résolue
+    (partagée par toutes les recherches, géocodée une seule fois dans
+    main()), et retourne les candidats.
 
+    Centris et uBee sont appelés dans des try/except séparés : une requête
+    refusée par l'un des deux (ex. valeur de filtre non reconnue) ne doit
+    interrompre ni l'autre site, ni les autres recherches de SEARCHES. Un
+    run du 2026-09-20 a montré que c'était nécessaire — uBee a répondu
+    400 Bad Request pour la recherche "condos" (valeur de filtre
+    inscriptionTypes/Copropriete non confirmée, voir UBEE_INSCRIPTION_TYPES),
+    ce qui a fait planter tout le script avant même la génération du
+    rapport, alors que "chalets" avait déjà réussi.
+    """
     radius_km = config["search_radius_km"]
     max_drive_hours = config["max_drive_hours"]
 
-    raw_listings = search_centris_listings(origin, radius_km, category=name)
-    raw_listings += search_ubee_listings(origin, radius_km, category=name)
+    raw_listings: list[dict] = []
+    try:
+        raw_listings += search_centris_listings(origin, radius_km, category=name)
+    except (RuntimeError, requests.RequestException) as exc:
+        print(f"[{name}] échec de la recherche Centris, ignorée pour ce run : {exc}")
+    try:
+        raw_listings += search_ubee_listings(origin, radius_km, category=name)
+    except (RuntimeError, requests.RequestException) as exc:
+        print(f"[{name}] échec de la recherche uBee, ignorée pour ce run : {exc}")
     print(f"[{name}] {len(raw_listings)} annonce(s) brute(s) trouvée(s) (Centris + uBee).")
     for l in raw_listings[:5]:
         d = haversine_km(origin, (l["lat"], l["lon"]))
@@ -810,14 +811,17 @@ def run_search(name: str, config: dict) -> tuple[tuple[float, float], list[dict]
             candidates.append(listing)
     print(f"[{name}] {len(candidates)} annonce(s) à {max_drive_hours * 60:.0f} min de route ou moins.")
 
-    return origin, candidates
+    return candidates
 
 
 def main() -> None:
+    origin = geocode_address(ORIGIN_ADDRESS)
+    print(f"Origine ({ORIGIN_ADDRESS}) géocodée à {origin}.")
+
     origins: dict[str, tuple[float, float]] = {}
     categories: dict[str, list[dict]] = {}
     for name, config in SEARCHES.items():
-        origin, candidates = run_search(name, config)
+        candidates = run_search(name, origin, config)
         origins[name] = origin
         categories[name] = candidates
 
