@@ -93,11 +93,11 @@ SEARCHES = {
 # soit visible dans les logs si ces valeurs ne matchent rien côté serveur.
 CENTRIS_PROPERTY_TYPES = {
     "chalets": ["Chalet", "ResidentialLot"],
-    "condos": ["Condominium"],  # non confirmé
+    "condos": ["SellCondo"],  # confirmé par capture réseau (Centris, 2026-09-20)
 }
 UBEE_INSCRIPTION_TYPES = {
     "chalets": ["Terrain", "Unifamiliale"],
-    "condos": ["Copropriete"],  # non confirmé
+    "condos": ["Condo"],  # confirmé par capture réseau (uBee, 2026-09-20)
 }
 
 BASE_DIR = Path(__file__).parent
@@ -240,11 +240,11 @@ def search_centris_listings(origin: tuple[float, float], radius_km: float, categ
     contexte — elles envoient automatiquement les bons cookies.
 
     `category` sélectionne les filtres via CENTRIS_PROPERTY_TYPES — pour
-    "condos", la valeur "Condominium" n'est PAS confirmée par capture
-    réseau (contrairement au reste de cette fonction) ; si le run trouve
-    0 annonce pour cette recherche, c'est le premier endroit à vérifier
-    (capturer une vraie recherche Condo sur centris.ca avec la marche à
-    suivre du README).
+    "condos", confirmé par capture réseau le 2026-09-20 sur une vraie
+    recherche Condo sur centris.ca : PropertyType="SellCondo" avec
+    valueConditionId="IsResidentialForSale" (différent de "IsResidential"
+    utilisé pour les chalets), et pas de champ LandArea dans la requête
+    (logique : LandArea concerne ResidentialLot, pas les condos).
 
     Pas de filtre "nombre de chambres" ici, contrairement à uBee
     (CONDO_MIN_BEDROOMS/CONDO_MAX_BEDROOMS) : le fieldId Centris pour ça
@@ -274,20 +274,21 @@ def search_centris_listings(origin: tuple[float, float], radius_km: float, categ
     from playwright.sync_api import sync_playwright
 
     url = "https://www.centris.ca/Property/GetInscriptions"
+    property_type_condition = "IsResidential" if category == "chalets" else "IsResidentialForSale"
     fields_values = [
-        {"fieldId": "PropertyType", "value": v, "fieldConditionId": "", "valueConditionId": "IsResidential"}
+        {"fieldId": "PropertyType", "value": v, "fieldConditionId": "", "valueConditionId": property_type_condition}
         for v in CENTRIS_PROPERTY_TYPES[category]
     ]
     if category == "chalets":
         fields_values += [
             {"fieldId": "NearbyWater", "value": "Waterfront", "fieldConditionId": "IsResidential", "valueConditionId": ""},
             {"fieldId": "Resort", "value": "Resort", "fieldConditionId": "IsResort", "valueConditionId": ""},
+            {"fieldId": "LandArea", "value": "SquareFeet", "fieldConditionId": "IsLandArea", "valueConditionId": ""},
         ]
     fields_values += [
         {"fieldId": "Category", "value": "Residential", "fieldConditionId": "", "valueConditionId": ""},
         {"fieldId": "SellingType", "value": "Sale", "fieldConditionId": "", "valueConditionId": ""},
         {"fieldId": "LivingArea", "value": "SquareFeet", "fieldConditionId": "IsResidentialNotLot", "valueConditionId": ""},
-        {"fieldId": "LandArea", "value": "SquareFeet", "fieldConditionId": "IsLandArea", "valueConditionId": ""},
         {"fieldId": "SalePrice", "value": 0, "fieldConditionId": "ForSale", "valueConditionId": ""},
         {"fieldId": "SalePrice", "value": 999999999999, "fieldConditionId": "ForSale", "valueConditionId": ""},
     ]
@@ -384,18 +385,19 @@ def search_ubee_listings(origin: tuple[float, float], radius_km: float, category
     uBee n'a pas de catégorie "Chalet" distincte dans son interface : les
     chalets y sont classés sous "Unifamiliale" (résidence uni-familiale) ou
     "Terrain", d'où UBEE_INSCRIPTION_TYPES["chalets"] = ["Terrain",
-    "Unifamiliale"]. La valeur pour "condos" ("Copropriete") n'est PAS
-    confirmée par capture réseau.
+    "Unifamiliale"]. La valeur pour "condos" ("Copropriete") avait d'abord
+    été devinée, ce qui causait un 400 Bad Request en production (voir
+    ci-dessous) ; corrigée en "Condo", confirmée par capture réseau le
+    2026-09-20 sur une vraie recherche Condo sur ubee.com.
 
-    Contrairement à ce que je pensais en l'écrivant, uBee **rejette** les
-    requêtes avec une valeur non reconnue (`400 Bad Request`) au lieu de
-    simplement retourner 0 résultat — confirmé en production le
-    2026-09-20 (`RuntimeError: uBee a refusé la requête SearchProperties
-    (400)`), très probablement à cause d'`inscriptionTypes: ["Copropriete"]`.
-    Ce n'est donc PAS plus sûr à deviner qu'un fieldId Centris (voir
-    search_centris_listings()) — run_search() encaisse maintenant cet
-    échec proprement (voir sa docstring) plutôt que de planter tout le
-    script, mais la vraie valeur reste à confirmer par capture réseau.
+    uBee **rejette** les requêtes avec une valeur non reconnue (`400 Bad
+    Request`) au lieu de simplement retourner 0 résultat — confirmé en
+    production le 2026-09-20 (`RuntimeError: uBee a refusé la requête
+    SearchProperties (400)`), causé par l'ancienne valeur devinée
+    `inscriptionTypes: ["Copropriete"]`. Ce n'est donc pas plus sûr à
+    deviner qu'un fieldId Centris (voir search_centris_listings()) —
+    run_search() encaisse ce genre d'échec proprement (voir sa docstring)
+    plutôt que de planter tout le script.
 
     Pour "condos", seul `minBedrooms` est fixé à CONDO_MIN_BEDROOMS — c'est
     un champ confirmé (déjà présent, à 0, dans la requête chalets
@@ -769,9 +771,11 @@ def run_search(name: str, origin: tuple[float, float], config: dict) -> list[dic
     interrompre ni l'autre site, ni les autres recherches de SEARCHES. Un
     run du 2026-09-20 a montré que c'était nécessaire — uBee a répondu
     400 Bad Request pour la recherche "condos" (valeur de filtre
-    inscriptionTypes/Copropriete non confirmée, voir UBEE_INSCRIPTION_TYPES),
-    ce qui a fait planter tout le script avant même la génération du
-    rapport, alors que "chalets" avait déjà réussi.
+    inscriptionTypes/Copropriete devinée à tort, corrigée depuis en
+    "Condo" — voir UBEE_INSCRIPTION_TYPES), ce qui a fait planter tout le
+    script avant même la génération du rapport, alors que "chalets" avait
+    déjà réussi. Le try/except reste utile pour toute future valeur de
+    filtre à deviner.
     """
     radius_km = config["search_radius_km"]
     max_drive_hours = config["max_drive_hours"]
