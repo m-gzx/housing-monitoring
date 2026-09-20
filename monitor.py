@@ -240,11 +240,11 @@ def search_centris_listings(origin: tuple[float, float], radius_km: float, categ
     contexte — elles envoient automatiquement les bons cookies.
 
     `category` sélectionne les filtres via CENTRIS_PROPERTY_TYPES — pour
-    "condos", la valeur "Condominium" n'est PAS confirmée par capture
-    réseau (contrairement au reste de cette fonction) ; si le run trouve
-    0 annonce pour cette recherche, c'est le premier endroit à vérifier
-    (capturer une vraie recherche Condo sur centris.ca avec la marche à
-    suivre du README).
+    "condos", confirmé par capture réseau le 2026-09-20 sur une vraie
+    recherche Condo sur centris.ca : PropertyType="SellCondo" avec
+    valueConditionId="IsResidentialForSale" (différent de "IsResidential"
+    utilisé pour les chalets), et pas de champ LandArea dans la requête
+    (logique : LandArea concerne ResidentialLot, pas les condos).
 
     Pas de filtre "nombre de chambres" ici, contrairement à uBee
     (CONDO_MIN_BEDROOMS/CONDO_MAX_BEDROOMS) : le fieldId Centris pour ça
@@ -274,20 +274,21 @@ def search_centris_listings(origin: tuple[float, float], radius_km: float, categ
     from playwright.sync_api import sync_playwright
 
     url = "https://www.centris.ca/Property/GetInscriptions"
+    property_type_condition = "IsResidential" if category == "chalets" else "IsResidentialForSale"
     fields_values = [
-        {"fieldId": "PropertyType", "value": v, "fieldConditionId": "", "valueConditionId": "IsResidential"}
+        {"fieldId": "PropertyType", "value": v, "fieldConditionId": "", "valueConditionId": property_type_condition}
         for v in CENTRIS_PROPERTY_TYPES[category]
     ]
     if category == "chalets":
         fields_values += [
             {"fieldId": "NearbyWater", "value": "Waterfront", "fieldConditionId": "IsResidential", "valueConditionId": ""},
             {"fieldId": "Resort", "value": "Resort", "fieldConditionId": "IsResort", "valueConditionId": ""},
+            {"fieldId": "LandArea", "value": "SquareFeet", "fieldConditionId": "IsLandArea", "valueConditionId": ""},
         ]
     fields_values += [
         {"fieldId": "Category", "value": "Residential", "fieldConditionId": "", "valueConditionId": ""},
         {"fieldId": "SellingType", "value": "Sale", "fieldConditionId": "", "valueConditionId": ""},
         {"fieldId": "LivingArea", "value": "SquareFeet", "fieldConditionId": "IsResidentialNotLot", "valueConditionId": ""},
-        {"fieldId": "LandArea", "value": "SquareFeet", "fieldConditionId": "IsLandArea", "valueConditionId": ""},
         {"fieldId": "SalePrice", "value": 0, "fieldConditionId": "ForSale", "valueConditionId": ""},
         {"fieldId": "SalePrice", "value": 999999999999, "fieldConditionId": "ForSale", "valueConditionId": ""},
     ]
