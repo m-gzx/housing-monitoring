@@ -43,11 +43,10 @@ from bs4 import BeautifulSoup
 ORIGIN_ADDRESS = "2450 Boul Laurier, Québec, QC G1V 2L1"
 
 # Coordonnées de secours pour ORIGIN_ADDRESS, utilisées seulement si
-# Nominatim échoue à la géocoder (voir geocode_address). Estimation pour
-# Place Laurier, Sainte-Foy — PAS vérifiée moi-même (mon environnement ne
-# peut pas contacter Nominatim) : à corriger si le display_name affiché
-# dans les logs au prochain run pointe ailleurs.
-ORIGIN_FALLBACK_COORDS = (46.7784, -71.2848)
+# Nominatim échoue à la géocoder (voir geocode_address). Place
+# Sainte-Foy, 2450 Boulevard Laurier — coordonnées confirmées par le
+# propriétaire (Apple Maps), pas une estimation.
+ORIGIN_FALLBACK_COORDS = (46.773389, -71.27876)
 
 HISTORY_DAYS = 5  # nombre de jours conservés dans l'historique roulant du rapport
 
