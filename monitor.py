@@ -65,23 +65,32 @@ CONDO_MIN_BEDROOMS = 3
 # de leur API en production le 2026-09-20. Utilisée pour l'instant
 # seulement dans le texte de critères affiché dans le rapport.
 CONDO_MAX_BEDROOMS = 5
+CONDO_MAX_PRICE = 750_000
 
 # Les deux recherches du rapport, toutes deux à partir d'ORIGIN_ADDRESS
 # (géocodée une seule fois dans main()). Voir search_centris_listings() /
 # search_ubee_listings() pour comment category sélectionne les filtres.
+# "max_price" est optionnel (None = pas de plafond) ; voir run_search().
 SEARCHES = {
     "chalets": {
         "label": "🏡 Chalets bord de l'eau",
         "criteria": f"{MAX_DRIVE_HOURS * 60:.0f} min de route max de {ORIGIN_ADDRESS}",
         "search_radius_km": SEARCH_RADIUS_KM,
         "max_drive_hours": MAX_DRIVE_HOURS,
+        "max_price": None,
         "map_zoom": 9,
     },
     "condos": {
         "label": "🏢 Condos centre-ville",
-        "criteria": f"{CONDO_MAX_DRIVE_HOURS * 60:.0f} min de route max de {ORIGIN_ADDRESS}, {CONDO_MIN_BEDROOMS}-{CONDO_MAX_BEDROOMS} chambres",
+        "criteria": (
+            f"{CONDO_MAX_DRIVE_HOURS * 60:.0f} min de route max de {ORIGIN_ADDRESS}, "
+            f"{CONDO_MIN_BEDROOMS}-{CONDO_MAX_BEDROOMS} chambres, "
+            + f"{CONDO_MAX_PRICE:,}".replace(",", " ")
+            + " $ max"
+        ),
         "search_radius_km": CONDO_SEARCH_RADIUS_KM,
         "max_drive_hours": CONDO_MAX_DRIVE_HOURS,
+        "max_price": CONDO_MAX_PRICE,
         "map_zoom": 13,
     },
 }
@@ -226,7 +235,9 @@ def parse_centris_listing_cards(html: str) -> list[dict]:
     return listings
 
 
-def search_centris_listings(origin: tuple[float, float], radius_km: float, category: str) -> list[dict]:
+def search_centris_listings(
+    origin: tuple[float, float], radius_km: float, category: str, max_price: int | None = None
+) -> list[dict]:
     """
     Interroge l'endpoint interne de recherche Centris (GetInscriptions),
     capturé et validé par inspection réseau (F12) le 2026-09-10 sur une
@@ -238,6 +249,10 @@ def search_centris_listings(origin: tuple[float, float], radius_km: float, categ
     première fois (ce qui établit ces cookies dans le contexte du
     navigateur), puis on référence les requêtes POST à travers ce même
     contexte — elles envoient automatiquement les bons cookies.
+
+    `max_price` (optionnel) remplace le plafond par défaut du champ
+    SalePrice (déjà confirmé par capture réseau, seule sa valeur change) —
+    permet de filtrer côté serveur sans deviner un nouveau fieldId.
 
     `category` sélectionne les filtres via CENTRIS_PROPERTY_TYPES — pour
     "condos", confirmé par capture réseau le 2026-09-20 sur une vraie
@@ -290,7 +305,7 @@ def search_centris_listings(origin: tuple[float, float], radius_km: float, categ
         {"fieldId": "SellingType", "value": "Sale", "fieldConditionId": "", "valueConditionId": ""},
         {"fieldId": "LivingArea", "value": "SquareFeet", "fieldConditionId": "IsResidentialNotLot", "valueConditionId": ""},
         {"fieldId": "SalePrice", "value": 0, "fieldConditionId": "ForSale", "valueConditionId": ""},
-        {"fieldId": "SalePrice", "value": 999999999999, "fieldConditionId": "ForSale", "valueConditionId": ""},
+        {"fieldId": "SalePrice", "value": max_price or 999999999999, "fieldConditionId": "ForSale", "valueConditionId": ""},
     ]
     query = {
         "SearchName": "",
@@ -779,10 +794,11 @@ def run_search(name: str, origin: tuple[float, float], config: dict) -> list[dic
     """
     radius_km = config["search_radius_km"]
     max_drive_hours = config["max_drive_hours"]
+    max_price = config.get("max_price")
 
     raw_listings: list[dict] = []
     try:
-        raw_listings += search_centris_listings(origin, radius_km, category=name)
+        raw_listings += search_centris_listings(origin, radius_km, category=name, max_price=max_price)
     except (RuntimeError, requests.RequestException) as exc:
         print(f"[{name}] échec de la recherche Centris, ignorée pour ce run : {exc}")
     try:
@@ -790,6 +806,15 @@ def run_search(name: str, origin: tuple[float, float], config: dict) -> list[dic
     except (RuntimeError, requests.RequestException) as exc:
         print(f"[{name}] échec de la recherche uBee, ignorée pour ce run : {exc}")
     print(f"[{name}] {len(raw_listings)} annonce(s) brute(s) trouvée(s) (Centris + uBee).")
+
+    if max_price is not None:
+        # uBee n'a pas de filtre de prix côté serveur (voir search_ubee_listings) —
+        # on filtre donc ici, après coup, pour couvrir les deux sources de façon
+        # symétrique. Une annonce sans prix connu (scraping incomplet) est gardée
+        # plutôt qu'exclue à tort.
+        before = len(raw_listings)
+        raw_listings = [l for l in raw_listings if l.get("price") is None or l["price"] <= max_price]
+        print(f"[{name}] {len(raw_listings)} annonce(s) à {max_price:,} $ ou moins (sur {before}).".replace(",", " "))
     for l in raw_listings[:5]:
         d = haversine_km(origin, (l["lat"], l["lon"]))
         print(f"[{name}]   échantillon : {l.get('address')} — ({l['lat']}, {l['lon']}) — {d:.0f} km à vol d'oiseau")
