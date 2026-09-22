@@ -389,14 +389,8 @@ def parse_ubee_listings(results: list[dict]) -> list[dict]:
     """
     Transforme les entrées brutes de SearchProperties en fiches structurées.
 
-    "bedrooms" n'est PAS extrait ici — le nom du champ dans la réponse JSON
-    n'a jamais été confirmé par capture réseau (contrairement à Centris,
-    voir parse_centris_listing_cards). Sans conséquence pratique pour
-    l'instant : uBee applique déjà minBedrooms côté serveur (confirmé),
-    donc ses annonces respectent déjà CONDO_MIN_BEDROOMS ; ce champ
-    manquant fait juste qu'elles ne sont jamais exclues par le filtre
-    chambres client-side du rapport (même convention que pour un prix
-    inconnu — voir build_html_report).
+    "bedrooms" vient de "nbBedrooms", confirmé par capture réseau (Response,
+    pas Payload) le 2026-09-22.
     """
     listings = []
     for r in results:
@@ -407,7 +401,7 @@ def parse_ubee_listings(results: list[dict]) -> list[dict]:
             "address": f"{r['address']}, {r['city']}",
             "lat": r["latitude"],
             "lon": r["longitude"],
-            "bedrooms": None,
+            "bedrooms": r.get("nbBedrooms"),
         })
     return listings
 
@@ -983,11 +977,13 @@ def run_search(name: str, origin: tuple[float, float], config: dict) -> list[dic
         # Centris "condos" n'a aucun filtre de chambres côté serveur (voir
         # search_centris_listings) — c'est ce qui laissait passer des
         # annonces à 2 chambres malgré CONDO_MIN_BEDROOMS. On filtre donc
-        # ici sur le nombre de chambres scrapé (confirmé par capture réseau
-        # le 2026-09-22, voir parse_centris_listing_cards). uBee applique
-        # déjà minBedrooms côté serveur (confirmé) mais n'expose pas ce
-        # champ dans sa réponse (bedrooms=None pour ses annonces) — gardées
-        # plutôt qu'exclues à tort, même convention que pour un prix inconnu.
+        # ici sur le nombre de chambres scrapé (Centris : confirmé par
+        # capture réseau le 2026-09-22, voir parse_centris_listing_cards ;
+        # uBee : "nbBedrooms", confirmé le même jour, voir
+        # parse_ubee_listings — filtre redondant avec son minBedrooms
+        # serveur, déjà confirmé, mais ne coûte rien). Une annonce sans
+        # chambre connue est gardée plutôt qu'exclue à tort, même
+        # convention que pour un prix inconnu.
         before = len(raw_listings)
         raw_listings = [l for l in raw_listings if l.get("bedrooms") is None or l["bedrooms"] >= min_bedrooms]
         print(f"[{name}] {len(raw_listings)} annonce(s) à {min_bedrooms}+ chambres (sur {before}).")
