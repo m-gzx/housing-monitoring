@@ -78,6 +78,7 @@ SEARCHES = {
         "search_radius_km": SEARCH_RADIUS_KM,
         "max_drive_hours": MAX_DRIVE_HOURS,
         "max_price": None,
+        "min_bedrooms": None,
         "map_zoom": 9,
     },
     "condos": {
@@ -91,6 +92,7 @@ SEARCHES = {
         "search_radius_km": CONDO_SEARCH_RADIUS_KM,
         "max_drive_hours": CONDO_MAX_DRIVE_HOURS,
         "max_price": CONDO_MAX_PRICE,
+        "min_bedrooms": CONDO_MIN_BEDROOMS,
         "map_zoom": 13,
     },
 }
@@ -210,6 +212,9 @@ def parse_centris_listing_cards(html: str) -> list[dict]:
       - adresse : les <div> à l'intérieur de <div class="address">
         (rue puis ville, la rue est parfois absente pour un terrain)
       - lat/lon : attributs data-lat/data-lng du <span class="ll-match-score">
+      - chambres : texte du <div class="cac"> (chambres à coucher), confirmé
+        par capture réseau le 2026-09-22 — absent pour un terrain/lot sans
+        bâtiment, d'où le repli sur None plutôt qu'un KeyError.
     """
     soup = BeautifulSoup(html, "html.parser")
     listings = []
@@ -223,6 +228,12 @@ def parse_centris_listing_cards(html: str) -> list[dict]:
 
         address_div = card.select_one(".address")
         address_lines = [d.get_text(strip=True) for d in address_div.find_all("div")] if address_div else []
+        cac_div = card.select_one(".cac")
+        bedrooms = None
+        if cac_div is not None:
+            cac_text = cac_div.get_text(strip=True)
+            if cac_text.isdigit():
+                bedrooms = int(cac_text)
 
         listings.append({
             "id": sku_meta["content"],
@@ -231,6 +242,7 @@ def parse_centris_listing_cards(html: str) -> list[dict]:
             "address": ", ".join(address_lines) or "Voir l'annonce",
             "lat": float(score_span["data-lat"]),
             "lon": float(score_span["data-lng"]),
+            "bedrooms": bedrooms,
         })
     return listings
 
@@ -374,7 +386,18 @@ def search_centris_listings(
 
 
 def parse_ubee_listings(results: list[dict]) -> list[dict]:
-    """Transforme les entrées brutes de SearchProperties en fiches structurées."""
+    """
+    Transforme les entrées brutes de SearchProperties en fiches structurées.
+
+    "bedrooms" n'est PAS extrait ici — le nom du champ dans la réponse JSON
+    n'a jamais été confirmé par capture réseau (contrairement à Centris,
+    voir parse_centris_listing_cards). Sans conséquence pratique pour
+    l'instant : uBee applique déjà minBedrooms côté serveur (confirmé),
+    donc ses annonces respectent déjà CONDO_MIN_BEDROOMS ; ce champ
+    manquant fait juste qu'elles ne sont jamais exclues par le filtre
+    chambres client-side du rapport (même convention que pour un prix
+    inconnu — voir build_html_report).
+    """
     listings = []
     for r in results:
         listings.append({
@@ -384,6 +407,7 @@ def parse_ubee_listings(results: list[dict]) -> list[dict]:
             "address": f"{r['address']}, {r['city']}",
             "lat": r["latitude"],
             "lon": r["longitude"],
+            "bedrooms": None,
         })
     return listings
 
@@ -561,6 +585,7 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
                     "lon": l["lon"],
                     "address": l.get("address", "Voir l'annonce"),
                     "price": l.get("price"),
+                    "bedrooms": l.get("bedrooms"),
                     "drive_minutes": l["drive_minutes"],
                     "url": l["url"],
                 }
@@ -574,12 +599,16 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
                     price = l.get("price")
                     price_display = f"{price:,}".replace(",", " ") + " $" if price else "Prix non précisé"
                     price_attr = price if price is not None else ""
+                    bedrooms = l.get("bedrooms")
+                    bedrooms_attr = bedrooms if bedrooms is not None else ""
+                    bedrooms_badge = f'<span class="bedrooms">🛏 {bedrooms}</span>' if bedrooms is not None else ""
                     cards += f"""
-        <a class="card" href="{l['url']}" target="_blank" rel="noopener" data-price="{price_attr}">
+        <a class="card" href="{l['url']}" target="_blank" rel="noopener" data-price="{price_attr}" data-bedrooms="{bedrooms_attr}">
           <div class="card-body">
             <div class="card-address">{address}</div>
             <div class="card-meta">
               <span class="price">{price_display}</span>
+              {bedrooms_badge}
               <span class="drive">🚗 {l['drive_minutes']:.0f} min</span>
             </div>
           </div>
@@ -659,8 +688,9 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
   }}
   .card:hover {{ box-shadow: 0 4px 14px rgba(0,0,0,.08); transform: translateY(-1px); }}
   .card-address {{ font-weight: 600; margin-bottom: 8px; }}
-  .card-meta {{ display: flex; justify-content: space-between; font-size: 0.9rem; color: #44403c; }}
+  .card-meta {{ display: flex; justify-content: space-between; gap: 8px; font-size: 0.9rem; color: #44403c; }}
   .price {{ font-weight: 600; color: #15803d; }}
+  .bedrooms {{ color: #78716c; }}
   .empty {{ color: #78716c; font-style: italic; }}
   footer {{ margin-top: 24px; font-size: 0.8rem; color: #78716c; }}
   .filters {{ display: flex; flex-direction: column; gap: 16px; margin-bottom: 20px; }}
@@ -698,6 +728,15 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
           <div class="range-filter-fill" id="priceFill"></div>
           <input type="range" id="priceMin">
           <input type="range" id="priceMax">
+        </div>
+      </div>
+      <div>
+        <div class="range-filter-label" id="bedroomsLabel"></div>
+        <div class="range-filter-slider">
+          <div class="range-filter-track"></div>
+          <div class="range-filter-fill" id="bedroomsFill"></div>
+          <input type="range" id="bedroomsMin">
+          <input type="range" id="bedroomsMax">
         </div>
       </div>
     </div>
@@ -768,57 +807,65 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
       return div;
     }}
 
-    // --- Filtre de prix (curseur double) ---
+    // --- Filtres à curseur double (prix, chambres) ---
     // Bornes calculées une fois par recherche à partir de toutes les
-    // annonces connues (tous les jours confondus), pour que l'échelle du
-    // curseur ne bouge pas en naviguant entre les jours — recalculée
+    // annonces connues (tous les jours confondus), pour que l'échelle des
+    // curseurs ne bouge pas en naviguant entre les jours — recalculée
     // seulement au changement de recherche (chalets/condos ont des
-    // échelles de prix très différentes).
-    const priceBounds = {{}};
-    for (const name of categories) {{
-      const prices = DAYS[name].flat().map(l => l.price).filter(p => p != null);
-      priceBounds[name] = prices.length ? [Math.min(...prices), Math.max(...prices)] : [0, 0];
+    // échelles de prix et de chambres très différentes). Une annonce dont
+    // la valeur filtrée est inconnue (scraping incomplet, ex. bedrooms=null
+    // pour toutes les annonces uBee) n'est jamais exclue à tort — même
+    // convention que le filtre CONDO_MAX_PRICE/CONDO_MIN_BEDROOMS côté
+    // serveur (run_search).
+    function makeRangeFilter(minInput, maxInput, fillEl, getValue) {{
+      const bounds = {{}};
+      for (const cat of categories) {{
+        const values = DAYS[cat].flat().map(getValue).filter(v => v != null);
+        bounds[cat] = values.length ? [Math.min(...values), Math.max(...values)] : [0, 0];
+      }}
+      const state = {{ range: [0, 0] }};
+      state.reset = () => {{
+        const [lo, hi] = bounds[currentCategory];
+        minInput.min = maxInput.min = lo;
+        minInput.max = maxInput.max = hi;
+        minInput.value = lo;
+        maxInput.value = hi;
+        state.range = [lo, hi];
+      }};
+      state.updateUI = () => {{
+        let lo = Number(minInput.value), hi = Number(maxInput.value);
+        if (lo > hi) {{ [lo, hi] = [hi, lo]; }} // les deux curseurs ne se croisent jamais
+        state.range = [lo, hi];
+        const [boundLo, boundHi] = bounds[currentCategory];
+        const span = (boundHi - boundLo) || 1;
+        fillEl.style.left = `${{((lo - boundLo) / span) * 100}}%`;
+        fillEl.style.right = `${{100 - ((hi - boundLo) / span) * 100}}%`;
+        return {{ lo, hi, isFullRange: lo === boundLo && hi === boundHi }};
+      }};
+      state.matches = (value) => {{
+        const [lo, hi] = state.range;
+        return value == null || (value >= lo && value <= hi);
+      }};
+      return state;
     }}
 
     const priceMinInput = document.getElementById('priceMin');
     const priceMaxInput = document.getElementById('priceMax');
     const priceLabel = document.getElementById('priceLabel');
-    const priceFill = document.getElementById('priceFill');
-    let priceRange = [0, 0];
+    const priceFilter = makeRangeFilter(priceMinInput, priceMaxInput, document.getElementById('priceFill'), l => l.price);
+
+    const bedroomsMinInput = document.getElementById('bedroomsMin');
+    const bedroomsMaxInput = document.getElementById('bedroomsMax');
+    const bedroomsLabel = document.getElementById('bedroomsLabel');
+    const bedroomsFilter = makeRangeFilter(bedroomsMinInput, bedroomsMaxInput, document.getElementById('bedroomsFill'), l => l.bedrooms);
 
     function fmtPrice(n) {{ return Math.round(n).toLocaleString('fr-CA') + ' $'; }}
-
-    function resetPriceFilter() {{
-      const [lo, hi] = priceBounds[currentCategory];
-      priceMinInput.min = priceMaxInput.min = lo;
-      priceMinInput.max = priceMaxInput.max = hi;
-      priceMinInput.value = lo;
-      priceMaxInput.value = hi;
-      priceRange = [lo, hi];
-    }}
-
-    function updatePriceUI() {{
-      let lo = Number(priceMinInput.value), hi = Number(priceMaxInput.value);
-      if (lo > hi) {{ [lo, hi] = [hi, lo]; }} // les deux curseurs ne se croisent jamais
-      priceRange = [lo, hi];
-      const [boundLo, boundHi] = priceBounds[currentCategory];
-      const span = (boundHi - boundLo) || 1;
-      priceFill.style.left = `${{((lo - boundLo) / span) * 100}}%`;
-      priceFill.style.right = `${{100 - ((hi - boundLo) / span) * 100}}%`;
-    }}
-
-    // Une annonce sans prix connu (scraping incomplet) n'est jamais exclue
-    // à tort par le filtre — même convention que côté serveur (run_search).
-    function inPriceRange(price) {{
-      const [lo, hi] = priceRange;
-      return price == null || (price >= lo && price <= hi);
-    }}
 
     function renderMarkers() {{
       if (!markersLayer) return;
       markersLayer.clearLayers();
       for (const l of DAYS[currentCategory][currentDay]) {{
-        if (!inPriceRange(l.price)) continue;
+        if (!priceFilter.matches(l.price) || !bedroomsFilter.matches(l.bedrooms)) continue;
         L.circleMarker([l.lat, l.lon], {{radius: 7, color: '#dc2626', fillColor: '#dc2626', fillOpacity: 0.85}})
           .addTo(markersLayer)
           .bindPopup(popupContent(l));
@@ -826,20 +873,24 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
     }}
 
     function applyFilters() {{
-      updatePriceUI();
+      const price = priceFilter.updateUI();
+      const bedrooms = bedroomsFilter.updateUI();
       const cards = document.querySelectorAll('.page:not([hidden]) .card');
       let visible = 0;
       cards.forEach(card => {{
         const p = card.dataset.price ? Number(card.dataset.price) : null;
-        const shown = inPriceRange(p);
+        const b = card.dataset.bedrooms ? Number(card.dataset.bedrooms) : null;
+        const shown = priceFilter.matches(p) && bedroomsFilter.matches(b);
         card.classList.toggle('filtered-out', !shown);
         if (shown) visible++;
       }});
       const total = DAYS[currentCategory][currentDay].length;
-      const [boundLo, boundHi] = priceBounds[currentCategory];
-      const [lo, hi] = priceRange;
-      const rangeText = (lo === boundLo && hi === boundHi) ? 'Tous les prix' : `${{fmtPrice(lo)}} – ${{fmtPrice(hi)}}`;
-      priceLabel.textContent = `💰 ${{rangeText}} · ${{visible}}/${{total}} annonce(s)`;
+      const priceText = price.isFullRange ? 'Tous les prix' : `${{fmtPrice(price.lo)}} – ${{fmtPrice(price.hi)}}`;
+      priceLabel.textContent = `💰 ${{priceText}} · ${{visible}}/${{total}} annonce(s)`;
+      const bedroomsText = bedrooms.isFullRange
+        ? 'Toutes les chambres'
+        : (bedrooms.lo === bedrooms.hi ? `${{bedrooms.lo}} chambres` : `${{bedrooms.lo}}-${{bedrooms.hi}} chambres`);
+      bedroomsLabel.textContent = `🛏 ${{bedroomsText}}`;
       renderMarkers();
     }}
 
@@ -859,10 +910,12 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
         originMarker.setLatLng(cfg.origin);
       }}
       if (currentCategory !== previousCategory) {{
-        // Recherche différente : réinitialise le curseur à sa pleine échelle
-        // plutôt que de garder un intervalle qui n'a plus de sens (ex. un
-        // 250k-750k choisi pour les condos, appliqué tel quel aux chalets).
-        resetPriceFilter();
+        // Recherche différente : réinitialise les curseurs à leur pleine
+        // échelle plutôt que de garder un intervalle qui n'a plus de sens
+        // (ex. un 250k-750k choisi pour les condos, appliqué tel quel aux
+        // chalets).
+        priceFilter.reset();
+        bedroomsFilter.reset();
         previousCategory = currentCategory;
       }}
       applyFilters();
@@ -872,6 +925,8 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
     toggleBtns.forEach(b => b.addEventListener('click', () => {{ currentCategory = b.dataset.category; render(); }}));
     priceMinInput.addEventListener('input', applyFilters);
     priceMaxInput.addEventListener('input', applyFilters);
+    bedroomsMinInput.addEventListener('input', applyFilters);
+    bedroomsMaxInput.addEventListener('input', applyFilters);
     render();
   </script>
 </body>
@@ -902,6 +957,7 @@ def run_search(name: str, origin: tuple[float, float], config: dict) -> list[dic
     radius_km = config["search_radius_km"]
     max_drive_hours = config["max_drive_hours"]
     max_price = config.get("max_price")
+    min_bedrooms = config.get("min_bedrooms")
 
     raw_listings: list[dict] = []
     try:
@@ -922,6 +978,19 @@ def run_search(name: str, origin: tuple[float, float], config: dict) -> list[dic
         before = len(raw_listings)
         raw_listings = [l for l in raw_listings if l.get("price") is None or l["price"] <= max_price]
         print(f"[{name}] {len(raw_listings)} annonce(s) à {max_price:,} $ ou moins (sur {before}).".replace(",", " "))
+
+    if min_bedrooms is not None:
+        # Centris "condos" n'a aucun filtre de chambres côté serveur (voir
+        # search_centris_listings) — c'est ce qui laissait passer des
+        # annonces à 2 chambres malgré CONDO_MIN_BEDROOMS. On filtre donc
+        # ici sur le nombre de chambres scrapé (confirmé par capture réseau
+        # le 2026-09-22, voir parse_centris_listing_cards). uBee applique
+        # déjà minBedrooms côté serveur (confirmé) mais n'expose pas ce
+        # champ dans sa réponse (bedrooms=None pour ses annonces) — gardées
+        # plutôt qu'exclues à tort, même convention que pour un prix inconnu.
+        before = len(raw_listings)
+        raw_listings = [l for l in raw_listings if l.get("bedrooms") is None or l["bedrooms"] >= min_bedrooms]
+        print(f"[{name}] {len(raw_listings)} annonce(s) à {min_bedrooms}+ chambres (sur {before}).")
     for l in raw_listings[:5]:
         d = haversine_km(origin, (l["lat"], l["lon"]))
         print(f"[{name}]   échantillon : {l.get('address')} — ({l['lat']}, {l['lon']}) — {d:.0f} km à vol d'oiseau")
