@@ -573,8 +573,9 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
                     address = l.get("address", "Voir l'annonce")
                     price = l.get("price")
                     price_display = f"{price:,}".replace(",", " ") + " $" if price else "Prix non précisé"
+                    price_attr = price if price is not None else ""
                     cards += f"""
-        <a class="card" href="{l['url']}" target="_blank" rel="noopener">
+        <a class="card" href="{l['url']}" target="_blank" rel="noopener" data-price="{price_attr}">
           <div class="card-body">
             <div class="card-address">{address}</div>
             <div class="card-meta">
@@ -662,6 +663,26 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
   .price {{ font-weight: 600; color: #15803d; }}
   .empty {{ color: #78716c; font-style: italic; }}
   footer {{ margin-top: 24px; font-size: 0.8rem; color: #78716c; }}
+  .filters {{ display: flex; flex-direction: column; gap: 16px; margin-bottom: 20px; }}
+  .range-filter-label {{ font-size: 0.9rem; color: #44403c; margin-bottom: 8px; }}
+  .range-filter-slider {{ position: relative; height: 24px; }}
+  .range-filter-track {{ position: absolute; top: 10px; left: 0; right: 0; height: 4px; background: #d6d3d1; border-radius: 999px; }}
+  .range-filter-fill {{ position: absolute; top: 10px; height: 4px; background: #1c1917; border-radius: 999px; }}
+  .range-filter-slider input[type="range"] {{
+    position: absolute; top: 6px; left: 0; width: 100%; height: 12px; margin: 0;
+    -webkit-appearance: none; appearance: none; background: transparent; pointer-events: none;
+  }}
+  .range-filter-slider input[type="range"]::-webkit-slider-runnable-track {{ height: 4px; background: transparent; }}
+  .range-filter-slider input[type="range"]::-moz-range-track {{ height: 4px; background: transparent; border: none; }}
+  .range-filter-slider input[type="range"]::-webkit-slider-thumb {{
+    -webkit-appearance: none; pointer-events: auto; width: 16px; height: 16px; border-radius: 50%;
+    background: #1c1917; border: 2px solid white; box-shadow: 0 0 0 1px #1c1917; cursor: pointer; margin-top: -6px;
+  }}
+  .range-filter-slider input[type="range"]::-moz-range-thumb {{
+    pointer-events: auto; width: 16px; height: 16px; border-radius: 50%;
+    background: #1c1917; border: 2px solid white; box-shadow: 0 0 0 1px #1c1917; cursor: pointer;
+  }}
+  .card.filtered-out {{ display: none; }}
 </style>
 </head>
 <body>
@@ -669,6 +690,17 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
     <h1>🏠 Chalets &amp; condos</h1>
     <p class="subtitle" id="subtitle">{initial_subtitle}</p>
     <div class="toggle">{toggle_buttons}</div>
+    <div class="filters">
+      <div>
+        <div class="range-filter-label" id="priceLabel"></div>
+        <div class="range-filter-slider">
+          <div class="range-filter-track"></div>
+          <div class="range-filter-fill" id="priceFill"></div>
+          <input type="range" id="priceMin">
+          <input type="range" id="priceMax">
+        </div>
+      </div>
+    </div>
     <div class="nav">
       <button id="prevBtn" aria-label="Jour précédent">‹</button>
       <span class="day-label" id="dayLabel"></span>
@@ -693,6 +725,7 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
 
     let currentDay = 0; // 0 = le plus récent
     let currentCategory = categories[0];
+    let previousCategory = null; // null force l'init des filtres au premier render()
 
     // Si Leaflet n'a pas pu se charger (CDN indisponible, bloqueur de
     // contenu, etc.), afficher un message plutôt qu'un rectangle vide et
@@ -735,14 +768,79 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
       return div;
     }}
 
+    // --- Filtre de prix (curseur double) ---
+    // Bornes calculées une fois par recherche à partir de toutes les
+    // annonces connues (tous les jours confondus), pour que l'échelle du
+    // curseur ne bouge pas en naviguant entre les jours — recalculée
+    // seulement au changement de recherche (chalets/condos ont des
+    // échelles de prix très différentes).
+    const priceBounds = {{}};
+    for (const name of categories) {{
+      const prices = DAYS[name].flat().map(l => l.price).filter(p => p != null);
+      priceBounds[name] = prices.length ? [Math.min(...prices), Math.max(...prices)] : [0, 0];
+    }}
+
+    const priceMinInput = document.getElementById('priceMin');
+    const priceMaxInput = document.getElementById('priceMax');
+    const priceLabel = document.getElementById('priceLabel');
+    const priceFill = document.getElementById('priceFill');
+    let priceRange = [0, 0];
+
+    function fmtPrice(n) {{ return Math.round(n).toLocaleString('fr-CA') + ' $'; }}
+
+    function resetPriceFilter() {{
+      const [lo, hi] = priceBounds[currentCategory];
+      priceMinInput.min = priceMaxInput.min = lo;
+      priceMinInput.max = priceMaxInput.max = hi;
+      priceMinInput.value = lo;
+      priceMaxInput.value = hi;
+      priceRange = [lo, hi];
+    }}
+
+    function updatePriceUI() {{
+      let lo = Number(priceMinInput.value), hi = Number(priceMaxInput.value);
+      if (lo > hi) {{ [lo, hi] = [hi, lo]; }} // les deux curseurs ne se croisent jamais
+      priceRange = [lo, hi];
+      const [boundLo, boundHi] = priceBounds[currentCategory];
+      const span = (boundHi - boundLo) || 1;
+      priceFill.style.left = `${{((lo - boundLo) / span) * 100}}%`;
+      priceFill.style.right = `${{100 - ((hi - boundLo) / span) * 100}}%`;
+    }}
+
+    // Une annonce sans prix connu (scraping incomplet) n'est jamais exclue
+    // à tort par le filtre — même convention que côté serveur (run_search).
+    function inPriceRange(price) {{
+      const [lo, hi] = priceRange;
+      return price == null || (price >= lo && price <= hi);
+    }}
+
     function renderMarkers() {{
       if (!markersLayer) return;
       markersLayer.clearLayers();
       for (const l of DAYS[currentCategory][currentDay]) {{
+        if (!inPriceRange(l.price)) continue;
         L.circleMarker([l.lat, l.lon], {{radius: 7, color: '#dc2626', fillColor: '#dc2626', fillOpacity: 0.85}})
           .addTo(markersLayer)
           .bindPopup(popupContent(l));
       }}
+    }}
+
+    function applyFilters() {{
+      updatePriceUI();
+      const cards = document.querySelectorAll('.page:not([hidden]) .card');
+      let visible = 0;
+      cards.forEach(card => {{
+        const p = card.dataset.price ? Number(card.dataset.price) : null;
+        const shown = inPriceRange(p);
+        card.classList.toggle('filtered-out', !shown);
+        if (shown) visible++;
+      }});
+      const total = DAYS[currentCategory][currentDay].length;
+      const [boundLo, boundHi] = priceBounds[currentCategory];
+      const [lo, hi] = priceRange;
+      const rangeText = (lo === boundLo && hi === boundHi) ? 'Tous les prix' : `${{fmtPrice(lo)}} – ${{fmtPrice(hi)}}`;
+      priceLabel.textContent = `💰 ${{rangeText}} · ${{visible}}/${{total}} annonce(s)`;
+      renderMarkers();
     }}
 
     function render() {{
@@ -760,11 +858,20 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
         map.setView(cfg.origin, cfg.zoom);
         originMarker.setLatLng(cfg.origin);
       }}
-      renderMarkers();
+      if (currentCategory !== previousCategory) {{
+        // Recherche différente : réinitialise le curseur à sa pleine échelle
+        // plutôt que de garder un intervalle qui n'a plus de sens (ex. un
+        // 250k-750k choisi pour les condos, appliqué tel quel aux chalets).
+        resetPriceFilter();
+        previousCategory = currentCategory;
+      }}
+      applyFilters();
     }}
     prevBtn.addEventListener('click', () => {{ if (currentDay < DAY_LABELS.length - 1) {{ currentDay++; render(); }} }});
     nextBtn.addEventListener('click', () => {{ if (currentDay > 0) {{ currentDay--; render(); }} }});
     toggleBtns.forEach(b => b.addEventListener('click', () => {{ currentCategory = b.dataset.category; render(); }}));
+    priceMinInput.addEventListener('input', applyFilters);
+    priceMaxInput.addEventListener('input', applyFilters);
     render();
   </script>
 </body>
