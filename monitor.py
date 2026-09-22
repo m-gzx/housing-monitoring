@@ -597,7 +597,7 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
                     bedrooms_attr = bedrooms if bedrooms is not None else ""
                     bedrooms_badge = f'<span class="bedrooms">🛏 {bedrooms}</span>' if bedrooms is not None else ""
                     cards += f"""
-        <a class="card" href="{l['url']}" target="_blank" rel="noopener" data-price="{price_attr}" data-bedrooms="{bedrooms_attr}">
+        <a class="card" href="{l['url']}" target="_blank" rel="noopener" data-price="{price_attr}" data-bedrooms="{bedrooms_attr}" data-lat="{l['lat']}" data-lon="{l['lon']}">
           <div class="card-body">
             <div class="card-address">{address}</div>
             <div class="card-meta">
@@ -780,6 +780,10 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
         .addTo(map)
         .bindTooltip('Point de départ');
       markersLayer = L.layerGroup().addTo(map);
+      // Limite les fiches affichées sous la carte à la zone visible après
+      // un zoom ou un déplacement (moveend couvre les deux, contrairement
+      // à move qui se déclenche en continu pendant le geste).
+      map.on('moveend', () => applyFilters());
     }}
 
     function popupContent(l) {{
@@ -866,6 +870,14 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
       }}
     }}
 
+    // Une fiche reste visible si la carte n'a pas pu se charger (pas de
+    // notion de "zone visible" dans ce cas) ou si ses coordonnées tombent
+    // dans les limites actuelles de la carte (zoom/déplacement).
+    function inMapView(lat, lon) {{
+      if (!map) return true;
+      return map.getBounds().contains([lat, lon]);
+    }}
+
     function applyFilters() {{
       const price = priceFilter.updateUI();
       const bedrooms = bedroomsFilter.updateUI();
@@ -874,7 +886,8 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
       cards.forEach(card => {{
         const p = card.dataset.price ? Number(card.dataset.price) : null;
         const b = card.dataset.bedrooms ? Number(card.dataset.bedrooms) : null;
-        const shown = priceFilter.matches(p) && bedroomsFilter.matches(b);
+        const lat = Number(card.dataset.lat), lon = Number(card.dataset.lon);
+        const shown = priceFilter.matches(p) && bedroomsFilter.matches(b) && inMapView(lat, lon);
         card.classList.toggle('filtered-out', !shown);
         if (shown) visible++;
       }});
