@@ -689,21 +689,27 @@ def build_html_report(origins: dict[str, tuple[float, float]], history: list[dic
   footer {{ margin-top: 24px; font-size: 0.8rem; color: #78716c; }}
   .filters {{ display: flex; flex-direction: column; gap: 16px; margin-bottom: 20px; }}
   .range-filter-label {{ font-size: 0.9rem; color: #44403c; margin-bottom: 8px; }}
-  .range-filter-slider {{ position: relative; height: 24px; }}
-  .range-filter-track {{ position: absolute; top: 10px; left: 0; right: 0; height: 4px; background: #d6d3d1; border-radius: 999px; }}
-  .range-filter-fill {{ position: absolute; top: 10px; height: 4px; background: #1c1917; border-radius: 999px; }}
+  /* Le conteneur et l'input sont plus hauts (32px) qu'il n'y parait (piste
+     visible de 4px) : sur mobile, une cible tactile de 16px était trop
+     petite et surtout, sans touch-action: none, le navigateur interprète
+     le glisser sur la poignée comme un scroll de la page plutôt qu'un
+     déplacement du curseur — la poignée semble alors complètement figée. */
+  .range-filter-slider {{ position: relative; height: 32px; }}
+  .range-filter-track {{ position: absolute; top: 14px; left: 0; right: 0; height: 4px; background: #d6d3d1; border-radius: 999px; }}
+  .range-filter-fill {{ position: absolute; top: 14px; height: 4px; background: #1c1917; border-radius: 999px; }}
   .range-filter-slider input[type="range"] {{
-    position: absolute; top: 6px; left: 0; width: 100%; height: 12px; margin: 0;
+    position: absolute; top: 0; left: 0; width: 100%; height: 32px; margin: 0;
     -webkit-appearance: none; appearance: none; background: transparent; pointer-events: none;
+    touch-action: none; -webkit-tap-highlight-color: transparent;
   }}
   .range-filter-slider input[type="range"]::-webkit-slider-runnable-track {{ height: 4px; background: transparent; }}
   .range-filter-slider input[type="range"]::-moz-range-track {{ height: 4px; background: transparent; border: none; }}
   .range-filter-slider input[type="range"]::-webkit-slider-thumb {{
-    -webkit-appearance: none; pointer-events: auto; width: 16px; height: 16px; border-radius: 50%;
-    background: #1c1917; border: 2px solid white; box-shadow: 0 0 0 1px #1c1917; cursor: pointer; margin-top: -6px;
+    -webkit-appearance: none; pointer-events: auto; width: 22px; height: 22px; border-radius: 50%;
+    background: #1c1917; border: 2px solid white; box-shadow: 0 0 0 1px #1c1917; cursor: pointer; margin-top: -9px;
   }}
   .range-filter-slider input[type="range"]::-moz-range-thumb {{
-    pointer-events: auto; width: 16px; height: 16px; border-radius: 50%;
+    pointer-events: auto; width: 22px; height: 22px; border-radius: 50%;
     background: #1c1917; border: 2px solid white; box-shadow: 0 0 0 1px #1c1917; cursor: pointer;
   }}
   .card.filtered-out {{ display: none; }}
